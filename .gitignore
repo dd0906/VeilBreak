@@ -1,0 +1,34 @@
+# Environments / caches
+env/
+env-wsl/
+venv/
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.pytest_cache/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Data is rebuilt by scripts (public datasets; see README)
+data/raw/
+data/processed/
+
+# Trained demo models (rebuild with scripts/train_final.py)
+models/classifier_*.pkl
+*.joblib
+
+# Local archive of the first attempt (and the one-time script that made it)
+_archive_v1/
+cleanup.ps1
+
+# Run logs and one-off diagnostic scripts (not part of the results)
+results/*.log
+results/test_examples.py
+results/time_imports.py
+
+# Private working notes (handoff + interview prep); kept on disk, not published
+HANDOFF.md
+docs/INTERVIEW_NOTES.md

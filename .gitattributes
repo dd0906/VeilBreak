@@ -1,0 +1,5 @@
+# Keep LF line endings everywhere: the code runs in WSL but git also runs on Windows,
+# and mixed endings would make every regenerated results file look fully changed.
+* text=auto eol=lf
+*.png binary
+*.npz binary
