@@ -35,3 +35,4 @@ results/time_imports.py
 HANDOFF.md
 docs/INTERVIEW_NOTES.md
 results/exposure_hint_progress.jsonl
+results/*_smoke.csv
