@@ -1,0 +1,7 @@
+# Only what the hosted demo needs. Pinned to the versions we tested with:
+# the classifier .pkl must be loaded by the same scikit-learn that saved it.
+numpy==2.5.4
+pandas==3.1.0
+scikit-learn==1.9.1
+sentence-transformers==6.2.0
+streamlit==1.66.1

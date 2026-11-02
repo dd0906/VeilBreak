@@ -26,9 +26,12 @@ cleanup.ps1
 
 # Run logs and one-off diagnostic scripts (not part of the results)
 results/*.log
+results/llamaguard_hf_progress.jsonl
+results/exposure_progress.jsonl
 results/test_examples.py
 results/time_imports.py
 
 # Private working notes (handoff + interview prep); kept on disk, not published
 HANDOFF.md
 docs/INTERVIEW_NOTES.md
+results/exposure_hint_progress.jsonl

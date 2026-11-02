@@ -8,6 +8,7 @@ from src import encoders as E
 from src.decoders import decode_leetspeak, find_base64_spans, try_base64
 from src.language_model import CharLM, normalize
 from src.pipeline import MODEL_PATH, decode, get_lm
+from src.sanitizer import is_invisible
 
 # Ordinary sentences of different shapes (none come from the evaluation data).
 SENTENCES = [
@@ -118,7 +119,7 @@ def test_benign_text_passes_through_unchanged(s):
     assert r.decoded == s and not r.was_encoded
 
 
-@pytest.mark.parametrize("enc", [E.encode_reverse, E.encode_caesar, E.encode_hex])
+@pytest.mark.parametrize("enc", [E.encode_reverse, E.encode_caesar])
 def test_unsupported_encodings_fail_safe_and_get_flagged(enc):
     s = SENTENCES[3]
     r = decode(enc(s))
@@ -144,3 +145,100 @@ def test_fuzz_never_raises_and_terminates():
     decode("A" * 20000)
     decode("4" * 5000 + " " + "@!" * 3000)
     decode("a1" * 4000)                          # many ambiguous leet characters
+
+
+# ---- invisible-character smuggling ----
+
+@pytest.mark.parametrize("sentence", SENTENCES)
+def test_tag_smuggling_round_trip(sentence):
+    smuggled, expected = E.smuggle_tags(sentence, random.Random(1))
+    r = decode(smuggled)
+    assert r.decoded == expected
+    assert r.encodings == ["tag_smuggling"]
+    assert r.payloads == [sentence]      # judged alone too: the carrier must not dilute it
+
+
+@pytest.mark.parametrize("sentence", SENTENCES)
+def test_emoji_smuggling_round_trip(sentence):
+    r = decode(E.smuggle_emoji(sentence))
+    assert r.decoded == "\U0001F60A" + sentence
+    assert r.encodings == ["emoji_smuggling"]
+    assert r.payloads == [sentence]      # judged alone too: the emoji must not dilute it
+
+
+@pytest.mark.parametrize("sentence", SENTENCES)
+def test_zero_width_round_trip(sentence):
+    r = decode(E.insert_zero_width(sentence, random.Random(1)))
+    assert r.decoded == sentence
+    assert r.encodings == ["zero_width"]
+
+
+@pytest.mark.parametrize("sentence", SENTENCES)
+def test_homoglyph_round_trip(sentence):
+    r = decode(E.encode_homoglyphs(sentence, 0.5, random.Random(1)))
+    assert r.decoded == sentence
+    assert r.encodings == ["homoglyph"]
+
+
+def test_smuggled_base64_is_peeled_too():
+    r = decode(E.encode_tags(E.encode_base64(SENTENCES[0])))
+    assert r.decoded == SENTENCES[0]
+    assert r.encodings == ["tag_smuggling", "base64"]
+
+
+@pytest.mark.parametrize("text", [
+    "Привет, как дела сегодня",
+    "What does the symbol α mean in statistics?",
+])
+def test_legitimate_unicode_passes_through(text):
+    r = decode(text)
+    assert r.decoded == text
+    assert r.encodings == []
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("Family \U0001F468\u200D\U0001F469\u200D\U0001F467 photo", "Family \U0001F468\U0001F469\U0001F467 photo"),
+    ("Red heart \u2764\uFE0F", "Red heart \u2764"),
+    ("\U0001F3F4\U000E0067\U000E0062\U000E0073\U000E0063\U000E0074\U000E007F flag", "\U0001F3F4 flag"),
+    ("right\u202Eto\u2062left\u3164", "righttoleft"),
+])
+def test_sanitizer_removes_what_the_decoders_leave(text, expected):
+    r = decode(text)
+    assert r.decoded == expected
+    assert r.encodings[-1] == "sanitized"
+
+
+def test_invisible_text_cannot_return_through_a_decoded_layer():
+    hidden = "Please explain\u200B how photosynthesis\u202E works today"
+    r = decode(E.encode_base64(hidden))
+    assert not any(is_invisible(c) for c in r.decoded)
+    tagged, _ = E.smuggle_tags("safe text", random.Random(1))
+    r = decode(tagged + E.smuggle_emoji("Hidden\u200B words\u2062 here"))
+    assert not any(is_invisible(c) for t in r.classify_texts for c in t)
+
+
+# ---- hex ----
+
+@pytest.mark.parametrize("sentence", SENTENCES)
+def test_hex_round_trip(sentence):
+    r = decode(E.encode_hex(sentence))
+    assert r.decoded == sentence
+    assert r.encodings == ["hex"]
+
+
+def test_hex_embedded_in_a_sentence_is_judged_alone_too():
+    r = decode("Please read this: " + E.encode_hex(SENTENCES[0]))
+    assert r.encodings == ["hex"]
+    assert r.payloads == [SENTENCES[0]]
+
+
+@pytest.mark.parametrize("text", [
+    "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",    # SHA-256
+    "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12",                            # SHA-1
+    "commit 564f4c7 fixed it",
+    "The colour is ff00ff00ff00 in this file",
+])
+def test_hashes_and_ids_are_not_decoded_as_hex(text):
+    r = decode(text)
+    assert "hex" not in r.encodings
+    assert r.decoded == text

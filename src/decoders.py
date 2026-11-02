@@ -4,6 +4,7 @@ decode -- that is the detector's job (pipeline.py).
 
   base64   exact inverse (when the input really is Base64)
   rot13    exact inverse
+  hex      exact inverse (when the input really is hex of readable text)
   leet     approximate inverse: '4'->'a' is easy, but '1' could be 'i' OR 'l'.
            We resolve that ambiguity by asking the language model which
            spelling looks more like English (see _resolve_token).
@@ -85,6 +86,34 @@ def decode_base64_spans(text):
         last = end
     out.append(text[last:])
     return "".join(out), len(spans), payloads
+
+
+# ------------------------------------------------------------------- Hex
+
+# An even-length run of 12+ hex characters. A hash or random id also matches this,
+# which is why try_hex only accepts a result that is real readable text.
+HEX_SPAN = re.compile(r"(?<![0-9a-zA-Z])(?:[0-9a-fA-F]{2}){6,}(?![0-9a-zA-Z])")
+
+
+def try_hex(span):
+    """Decode a hex candidate. Returns the decoded string, or None (same checks as Base64)."""
+    try:
+        text = bytes.fromhex(span).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    printable = sum(ch.isprintable() or ch in "\n\t" for ch in text) / len(text)
+    texty = sum(ch.isalpha() or ch.isspace() for ch in text) / len(text)
+    return text if printable >= 0.95 and texty >= 0.60 else None
+
+
+def decode_hex_spans(text):
+    """Replace every readable hex span by its decoding. Returns (new_text, n_spans, payloads)."""
+    spans = []
+    for m in HEX_SPAN.finditer(text):
+        decoded = try_hex(m.group(0))
+        if decoded is not None:
+            spans.append((m.start(), m.end(), decoded))
+    return _with_payloads(text, spans) if spans else (text, 0, [])
 
 
 # ----------------------------------------------------------------- ROT13
@@ -241,3 +270,122 @@ def decode_leetspeak(text, lm):
         last = end
     out.append(text[last:])
     return "".join(out), changed
+
+
+# ---------------------------------------------------- Invisible characters
+#
+# Current "smuggling" attacks hide text in Unicode characters that a person
+# cannot see but an LLM can still read. All four are exact or near-exact to
+# undo, so they are plain rules with no language model:
+#   tag_smuggling    letters copied into the invisible Tags block (U+E00xx)
+#   emoji_smuggling  bytes hidden in variation selectors after an emoji
+#   zero_width       invisible characters inserted inside words
+#   homoglyph        Latin letters swapped for look-alike Cyrillic/Greek ones
+
+TAG_RUN = re.compile("[\U000E0020-\U000E007E]+")
+TAG_OFFSET = 0xE0000
+BLACK_FLAG = "\U0001F3F4"      # subdivision flags (Scotland...) legitimately use tags
+
+VS_RUN = re.compile("[︀-️\U000E0100-\U000E01EF]{4,}")   # one alone is a normal emoji style
+
+ZERO_WIDTH_RUN = re.compile("[​‌‍⁠﻿­]+")
+JOINERS = set("‌‍")  # also used by real emoji and some scripts (see strip_zero_width)
+
+# Look-alike letter -> the Latin letter it imitates.
+HOMOGLYPHS = {
+    # Cyrillic
+    "а": "a", "с": "c", "е": "e", "о": "o", "р": "p", "х": "x", "у": "y",
+    "і": "i", "ј": "j", "ѕ": "s", "һ": "h", "ԁ": "d", "ԛ": "q", "ԝ": "w",
+    "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M", "Н": "H", "О": "O",
+    "Р": "P", "С": "C", "Т": "T", "Х": "X", "Ѕ": "S", "І": "I", "Ј": "J",
+    # Greek
+    "ο": "o", "α": "a", "ν": "v", "ρ": "p", "ι": "i",
+    "Α": "A", "Β": "B", "Ε": "E", "Ζ": "Z", "Η": "H", "Ι": "I", "Κ": "K",
+    "Μ": "M", "Ν": "N", "Ο": "O", "Ρ": "P", "Τ": "T", "Υ": "Y", "Χ": "X",
+}
+
+
+def _with_payloads(text, spans):
+    """Replace (start, end, hidden) spans. A payload is listed separately only
+    if something visible around it (words, or even a lone emoji) could dilute it."""
+    out, last = [], 0
+    for start, end, hidden in spans:
+        out.append(text[last:start])
+        out.append(hidden)
+        last = end
+    out.append(text[last:])
+    visible = "".join(text[a:b] for a, b in zip([0] + [e for _, e, _ in spans],
+                                                [s for s, _, _ in spans] + [len(text)]))
+    payloads = [h for _, _, h in spans] if visible.strip() else []
+    return "".join(out), len(spans), payloads
+
+
+def decode_tag_smuggling(text):
+    """Reveal text hidden in Unicode Tag characters. Returns (text, n_spans, payloads)."""
+    spans = [(m.start(), m.end(), "".join(chr(ord(c) - TAG_OFFSET) for c in m.group(0)))
+             for m in TAG_RUN.finditer(text)
+             if not (m.start() > 0 and text[m.start() - 1] == BLACK_FLAG)]
+    return _with_payloads(text, spans) if spans else (text, 0, [])
+
+
+def _vs_to_byte(ch):
+    cp = ord(ch)
+    return cp - 0xFE00 if cp <= 0xFE0F else cp - 0xE0100 + 16
+
+
+def decode_emoji_smuggling(text):
+    """Reveal bytes hidden in variation selectors. Returns (text, n_spans, payloads)."""
+    spans = []
+    for m in VS_RUN.finditer(text):
+        try:
+            hidden = bytes(_vs_to_byte(c) for c in m.group(0)).decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        if all(c.isprintable() or c in "\n\t" for c in hidden):
+            spans.append((m.start(), m.end(), hidden))
+    return _with_payloads(text, spans) if spans else (text, 0, [])
+
+
+def strip_zero_width(text):
+    """Remove invisible characters inserted into words. Returns (text, n_removed).
+
+    Joiners are kept unless they follow an ASCII letter or digit: they are how
+    real emoji sequences and some non-Latin scripts are written.
+    """
+    removed = 0
+
+    def repl(m):
+        nonlocal removed
+        run = m.group(0)
+        before = text[m.start() - 1] if m.start() > 0 else ""
+        if set(run) <= JOINERS and not (before.isascii() and before.isalnum()):
+            return run
+        removed += len(run)
+        return ""
+
+    return ZERO_WIDTH_RUN.sub(repl, text), removed
+
+
+def _is_foreign_letter(ch):
+    return ch.isalpha() and not ch.isascii() and ch not in HOMOGLYPHS
+
+
+def decode_homoglyphs(text):
+    """Map look-alike letters back to Latin. Returns (text, n_replaced).
+
+    Only fires with evidence of a swap: at least one word mixes Latin letters
+    with look-alikes. Real Russian or Greek text, or a lone 'α' in a maths
+    question, has no such word and passes through untouched.
+    """
+    mixed = False
+    for tok in _TOKEN.findall(text):
+        letters = [c for c in tok if c.isalpha()]
+        has_latin = any(c.isascii() for c in letters)
+        has_lookalike = any(c in HOMOGLYPHS for c in letters)
+        if has_latin and has_lookalike and not any(_is_foreign_letter(c) for c in letters):
+            mixed = True
+            break
+    if not mixed:
+        return text, 0
+    n = sum(c in HOMOGLYPHS for c in text)
+    return "".join(HOMOGLYPHS.get(c, c) for c in text), n

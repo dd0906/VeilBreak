@@ -6,6 +6,10 @@ Download the raw datasets into data/raw/ (skips files you already have).
   jailbreakbench.csv  100 harmful behaviours   (JailbreakBench, HuggingFace)
   jbb_benign.csv      100 BENIGN behaviours written to mirror the harmful ones
                       (same topics, same style) -> the hardest benign test set
+  xstest.csv          safe prompts that sound unsafe + unsafe look-alikes
+                      (Rottger et al. 2024, CC-BY-4.0). Extra TRAINING data only.
+  harmbench.csv       'standard' harmful behaviours (Mazeika et al. 2024, MIT).
+                      Extra TRAINING data only.
 
 All files share one schema: prompt, source, label.
 
@@ -67,10 +71,31 @@ def jailbreakbench():
     save(ds["benign"]["Goal"], "jbb_benign", "safe", "jbb_benign.csv")
 
 
+def xstest():
+    if have("xstest.csv"):
+        return
+    url = "https://raw.githubusercontent.com/paul-rottger/xstest/main/xstest_prompts.csv"
+    df = pd.read_csv(url)
+    pd.DataFrame({"prompt": df["prompt"].str.strip(), "source": "xstest",
+                  "label": df["label"]}).to_csv(os.path.join(RAW, "xstest.csv"), index=False)
+    print(f"  saved {len(df)} prompts -> data/raw/xstest.csv")
+
+
+def harmbench():
+    if have("harmbench.csv"):
+        return
+    url = ("https://raw.githubusercontent.com/centerforaisafety/HarmBench/main/"
+           "data/behavior_datasets/harmbench_behaviors_text_all.csv")
+    df = pd.read_csv(url)
+    # 'contextual' needs extra context text and 'copyright' is a different problem.
+    save(df[df["FunctionalCategory"] == "standard"]["Behavior"], "harmbench", "unsafe", "harmbench.csv")
+
+
 def main():
     print("VeilBreak - dataset collection")
     for name, fn in (("AdvBench", advbench), ("Alpaca", alpaca),
-                     ("JailbreakBench", jailbreakbench)):
+                     ("JailbreakBench", jailbreakbench),
+                     ("XSTest", xstest), ("HarmBench", harmbench)):
         print(f"[{name}]")
         try:
             fn()

@@ -7,17 +7,25 @@ The VeilBreak decode pipeline.
 
 A decoder step is ACCEPTED only with evidence:
   * base64    : the span decodes to readable text (structural check)
+  * hex       : same structural check, so hashes and random ids stay untouched
   * rot13     : the result looks clearly MORE English than the input
   * leetspeak : same, checked token by token
 Because every accepted step must make the text more readable (or reveal a
 valid Base64 payload), the loop always terminates and unknown / plain text
 passes through UNCHANGED -- the safe fallback.
 
+Before that loop, one pass removes invisible-character smuggling (tag
+characters, emoji variation selectors, zero-width characters, homoglyphs). It
+runs first because those tricks can wrap any of the encodings above, e.g. a
+Base64 string hidden in tag characters. The sanitizer (sanitizer.py) then runs
+last on everything we return, so a decoded layer cannot bring invisible
+characters back in.
+
 Design trade-off: we use rules + a small language model instead of a trained
-detector. It is deterministic and explainable, but it only knows the three
-encodings it was built for. For anything else it cannot decode, so it raises
-the `suspicious` flag (text looks like gibberish) and leaves the decision to
-the caller.
+detector. It is deterministic and explainable, but it only knows the encodings
+it was built for. For anything else it cannot decode, so it raises the
+`suspicious` flag (text looks like gibberish) and leaves the decision to the
+caller.
 """
 
 import os
@@ -25,9 +33,13 @@ import re
 from dataclasses import dataclass, field
 from typing import List
 
-from src.decoders import (decode_base64_spans, decode_leetspeak,
-                          decode_rot13, find_base64_spans)
+from src.decoders import (decode_base64_spans, decode_emoji_smuggling,
+                          decode_hex_spans, decode_homoglyphs,
+                          decode_leetspeak, decode_rot13,
+                          decode_tag_smuggling, find_base64_spans,
+                          strip_zero_width)
 from src.language_model import CharLM
+from src.sanitizer import sanitize
 
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "..", "models", "char_lm.npz")
@@ -44,7 +56,7 @@ MAX_DEPTH = 3               # how many layers of encoding we will peel
 
 @dataclass
 class Step:
-    transform: str          # 'base64' | 'rot13' | 'leetspeak'
+    transform: str          # 'base64' | 'hex' | 'rot13' | 'leetspeak' | an invisible-character step
     detail: str = ""        # e.g. "2 spans" -- for the demo / debugging
     gain: float = 0.0       # LM score improvement (0 for base64)
     payloads: List[str] = field(default_factory=list)  # decoded spans embedded in a sentence
@@ -105,6 +117,11 @@ def _candidates(text, lm, last):
     if n:
         cands.append((Step("base64", f"{n} span(s)", payloads=payloads), new, 10.0))
 
+    # Hex (whole string or embedded). Same structural check as Base64.
+    new, n, payloads = decode_hex_spans(text)
+    if n:
+        cands.append((Step("hex", f"{n} span(s)", payloads=payloads), new, 9.0))
+
     # 2) ROT13 (whole text). Needs a clear language-model win.
     if last != "rot13" and _letters(text) >= ROT13_MIN_LETTERS:
         new = decode_rot13(text)
@@ -126,6 +143,29 @@ def _candidates(text, lm, last):
     return cands
 
 
+def _reveal_invisible(text):
+    """Undo invisible-character smuggling. Returns (new_text, [Step, ...]).
+    Each trick is checked once, in this order; hidden text is revealed before
+    the look-alike rules run on it."""
+    steps = []
+    new, n, payloads = decode_tag_smuggling(text)
+    if n:
+        steps.append(Step("tag_smuggling", f"{n} span(s)", payloads=payloads))
+    text = new
+    new, n, payloads = decode_emoji_smuggling(text)
+    if n:
+        steps.append(Step("emoji_smuggling", f"{n} span(s)", payloads=payloads))
+    text = new
+    new, n = strip_zero_width(text)
+    if n:
+        steps.append(Step("zero_width", f"{n} char(s)"))
+    text = new
+    new, n = decode_homoglyphs(text)
+    if n:
+        steps.append(Step("homoglyph", f"{n} char(s)"))
+    return new, steps
+
+
 _HEX_ONLY = re.compile(r"[0-9a-fA-F]{20,}")
 
 
@@ -137,11 +177,21 @@ def _looks_undecodable(text, lm):
     return len(t) >= SUSPICIOUS_MIN_CHARS and lm.score(t) < SUSPICIOUS_BELOW
 
 
+def _sanitize_result(current, steps):
+    """Remove leftover invisible characters from the text and every payload."""
+    clean, removed = sanitize(current)
+    for step in steps:
+        step.payloads = [sanitize(p)[0] for p in step.payloads]
+    if removed:
+        steps.append(Step("sanitized", f"{removed} char(s)"))
+    return clean, steps
+
+
 def decode(text, max_depth=MAX_DEPTH):
     """Peel off up to `max_depth` encoding layers. Never raises."""
     lm = get_lm()
     try:
-        current, steps = text, []
+        current, steps = _reveal_invisible(text)
         for _ in range(max_depth):
             cands = _candidates(current, lm, steps[-1].transform if steps else None)
             if not cands:
@@ -152,9 +202,11 @@ def decode(text, max_depth=MAX_DEPTH):
             steps.append(step)
             current = new_text
         suspicious = (not steps and _looks_undecodable(current, lm))
+        current, steps = _sanitize_result(current, steps)
         return DecodeResult(text, current, steps, suspicious)
-    except Exception:                      # safe fallback: pass text through
-        return DecodeResult(text, text, [], False)
+    except Exception:                      # safe fallback: pass text through, but still clean
+        clean, steps = _sanitize_result(text, [])
+        return DecodeResult(text, clean, steps, False)
 
 
 def decode_many(texts):

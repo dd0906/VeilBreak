@@ -26,6 +26,7 @@ not at all (no access to the models where this was written). The smoke test prin
 you can confirm the parsing works before the long run.
 """
 import argparse
+import hashlib
 import json
 import re
 import os
@@ -79,11 +80,27 @@ def parse_verdict(reply):
     return "error"
 
 
-def classify(tok, model, device, texts, list_content, batch_size):
-    """Returns {text: parse_verdict(reply)} for every distinct text."""
+def load_progress(path):
+    """Verdicts already saved by an earlier, interrupted run: {text hash: verdict}."""
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return dict(json.loads(line) for line in f if line.strip())
+
+
+def text_hash(text):
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def classify(tok, model, device, texts, list_content, batch_size, progress_path):
+    """Returns {text: parse_verdict(reply)} for every distinct text.
+    A long run can crash, so each batch is saved to `progress_path` and skipped
+    on a re-run. Only a hash of each prompt is stored, never the prompt itself."""
     import torch
-    out = {}
-    uniq = sorted(set(texts), key=len)              # similar lengths batch together
+    done = load_progress(progress_path)
+    out = {t: done[text_hash(t)] for t in set(texts) if text_hash(t) in done}
+    uniq = sorted(set(texts) - set(out), key=len)   # similar lengths batch together
+    print(f"  {len(out)} verdicts reused from an earlier run, {len(uniq)} to do")
     for i in range(0, len(uniq), batch_size):
         batch = uniq[i:i + batch_size]
         prompts = [render(tok, t, list_content) for t in batch]
@@ -92,8 +109,10 @@ def classify(tok, model, device, texts, list_content, batch_size):
         with torch.inference_mode():
             gen = model.generate(**enc, max_new_tokens=10, do_sample=False,
                                  pad_token_id=tok.pad_token_id)
-        for t, g in zip(batch, gen[:, enc["input_ids"].shape[1]:]):
-            out[t] = parse_verdict(tok.decode(g, skip_special_tokens=True))
+        with open(progress_path, "a", encoding="utf-8") as f:
+            for t, g in zip(batch, gen[:, enc["input_ids"].shape[1]:]):
+                out[t] = parse_verdict(tok.decode(g, skip_special_tokens=True))
+                f.write(json.dumps([text_hash(t), out[t]]) + "\n")
         print(f"  {min(i + batch_size, len(uniq))}/{len(uniq)} distinct texts", end="\r")
     print()
     return out
@@ -146,7 +165,15 @@ def main():
     ap.add_argument("--data", default=os.path.join(ROOT, "data", "processed", "veilbreak_v2.csv"))
     ap.add_argument("--out", default=os.path.join(ROOT, "results", "llamaguard_predictions.csv"))
     ap.add_argument("--batch-size", type=int, default=16)
+    ap.add_argument("--progress", default=os.path.join(ROOT, "results", "llamaguard_hf_progress.jsonl"),
+                    help="where the hf backend saves verdicts as it goes, so a crash loses little")
     ap.add_argument("--limit", type=int, default=0, help="only the first N prompt groups")
+    ap.add_argument("--variants", default="",
+                    help="comma-separated variants to score; their rows are merged into --out, "
+                         "keeping every other prediction as it is")
+    ap.add_argument("--retry-errors", action="store_true",
+                    help="re-score only rows in --out that have an 'error' reply and merge them "
+                         "back (e.g. after the Ollama server crashed mid-run)")
     args = ap.parse_args()
     args.model = args.model or ("llama-guard3:1b" if args.backend == "ollama"
                                 else "meta-llama/Llama-Guard-3-1B")
@@ -158,6 +185,11 @@ def main():
         keep = df.drop_duplicates("group_id").group_id.head(args.limit)
         df = df[df.group_id.isin(keep)]
         args.out = args.out.replace(".csv", "_smoke.csv")    # never clobber a full run
+    if args.variants:
+        df = df[df.variant.isin(args.variants.split(","))]
+    if args.retry_errors:
+        old = pd.read_csv(args.out)
+        df = df[df.id.isin(old.loc[old["pred"] == "error", "id"])]
     print(f"{len(df)} rows ({df.group_id.nunique()} groups)")
 
     # Build every (row id, which input, text) triple we need to score.
@@ -181,9 +213,13 @@ def main():
         verdict = classify_ollama(args.ollama_url, args.model, [t for _, _, t in jobs], args.workers)
     else:
         tok, model, device = load_model(args.model)
-        print("Probe check:", classify(tok, model, device, probes, list_content, 2))
-        verdict = classify(tok, model, device, [t for _, _, t in jobs], list_content, args.batch_size)
+        print("Probe check:", classify(tok, model, device, probes, list_content, 2, args.progress))
+        verdict = classify(tok, model, device, [t for _, _, t in jobs], list_content, args.batch_size,
+                           args.progress)
     res = pd.DataFrame([{"id": i, "input": kind, "pred": verdict[t]} for i, kind, t in jobs])
+    if (args.variants or args.retry_errors) and os.path.exists(args.out):
+        old = pd.read_csv(args.out)
+        res = pd.concat([old[~old["id"].isin(res["id"])], res], ignore_index=True)
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     res.to_csv(args.out, index=False)
     print(res.groupby(["input", "pred"]).size().unstack(fill_value=0))

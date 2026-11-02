@@ -6,7 +6,8 @@ The defense itself never calls them.
 
 Supported (in scope):  base64, rot13, leetspeak
 Compositions:          chain them, e.g. base64(rot13(text))
-Out-of-scope encoders: hex, reverse, caesar3 -- used only to test how the
+Added later, no retraining: hex
+Out-of-scope encoders: reverse, caesar3 -- used only to test how the
                        pipeline behaves on encodings it does NOT understand.
 
 Every function is deterministic given the same `rng` (a random.Random),
@@ -75,7 +76,7 @@ def embed_base64(text, rng=None):
     return template.format(payload=encode_base64(text)), template
 
 
-# ---- out-of-scope encodings (only for "does it fail safely?" tests) ----
+# ---- hex has a decoder; the others test "does it fail safely?" ----
 
 def encode_hex(text):
     return text.encode("utf-8").hex()
@@ -99,3 +100,58 @@ def encode_caesar(text, shift=3):
 def encode_composed(text):
     """base64(rot13(text)) -- two layers, as in 'Plentiful Jailbreaks'."""
     return encode_base64(encode_rot13(text))
+
+
+# ---- invisible-character smuggling (current attacks; see decoders.py) ----
+
+# Harmless visible text a smuggled message hides behind.
+SMUGGLE_CARRIERS = [
+    "Hi, can you help me with this?",
+    "Please respond to my message.",
+    "Thanks in advance!",
+    "Here is my question for today.",
+]
+
+ZERO_WIDTH_CHARS = ["​", "‌", "‍", "⁠"]
+
+# Latin letter -> look-alike Cyrillic letters.
+HOMOGLYPH_MAP = {"a": "а", "c": "с", "e": "е", "o": "о", "p": "р", "x": "х",
+                 "y": "у", "i": "і", "j": "ј", "s": "ѕ"}
+
+
+def encode_tags(text):
+    """Copy ASCII characters into the invisible Unicode Tags block."""
+    return "".join(chr(0xE0000 + ord(c)) if 0x20 <= ord(c) <= 0x7E else c for c in text)
+
+
+def smuggle_tags(text, rng=None):
+    """Hide `text` as tag characters after a harmless visible sentence.
+    Returns (smuggled_text, what_decoding_should_give)."""
+    rng = rng or random.Random(0)
+    carrier = rng.choice(SMUGGLE_CARRIERS)
+    return f"{carrier} {encode_tags(text)}", f"{carrier} {text}"
+
+
+def smuggle_emoji(text, emoji="\U0001F60A"):
+    """Hide the UTF-8 bytes of `text` in variation selectors after one emoji."""
+    def selector(b):
+        return chr(0xFE00 + b) if b < 16 else chr(0xE0100 + b - 16)
+    return emoji + "".join(selector(b) for b in text.encode("utf-8"))
+
+
+def insert_zero_width(text, rng=None):
+    """Put an invisible character between the letters of every word."""
+    rng = rng or random.Random(0)
+    out = []
+    for i, ch in enumerate(text):
+        out.append(ch)
+        if ch.isalnum() and i + 1 < len(text) and text[i + 1].isalnum():
+            out.append(rng.choice(ZERO_WIDTH_CHARS))
+    return "".join(out)
+
+
+def encode_homoglyphs(text, intensity=0.5, rng=None):
+    """Swap some Latin letters for identical-looking Cyrillic ones."""
+    rng = rng or random.Random(0)
+    return "".join(HOMOGLYPH_MAP[c] if c in HOMOGLYPH_MAP and rng.random() < intensity else c
+                   for c in text)

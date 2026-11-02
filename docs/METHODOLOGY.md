@@ -15,13 +15,13 @@ How the numbers in the README are produced, and which choices could bias them.
 1. deduplicates prompts and assigns one `group_id` per original prompt;
 2. splits groups into **dev** (hash bucket 0 of 5, used for tuning) and **eval** (everything else, used for every reported number);
 3. filters benign prompts to the harmful prompts' length range (2nd–98th percentile), and takes half of them in imperative style ("Write…", "Create…") so style alone can't separate the classes;
-4. creates **9 variants of every prompt, safe and unsafe alike**: plain, base64, rot13, leetspeak (intensity drawn from {0.6, 0.8, 1.0}), composed (`base64(rot13(x))`), embedded_base64 (inside one of 4 wrapper sentences), and three **out-of-scope** encodings (hex, reversed, Caesar-3).
+4. creates **13 variants of every prompt, safe and unsafe alike**: plain, base64, rot13, leetspeak (intensity drawn from {0.6, 0.8, 1.0}), composed (`base64(rot13(x))`), embedded_base64 (inside one of 4 wrapper sentences), hex (first out of scope, decoder added later with no retraining, kept out of the "ALL obfuscated" average), two **out-of-scope** encodings (reversed, Caesar-3), and four invisible-character attacks (tag smuggling, emoji smuggling, zero-width, homoglyph), reported separately. The four attack variants use their own random generator and are appended after the original rows, so the original rows reproduce exactly.
 
 The language model behind ROT13/leetspeak detection is fit on Alpaca rows with `index % 5 != 0`, so it has never seen an evaluation prompt.
 
 ## 2. Classification protocol
 
-- 5-fold `StratifiedGroupKFold` over prompt groups (seed 42): a group's 9 variants are always together in train or in test (an `assert` checks the overlap is empty).
+- 5-fold `StratifiedGroupKFold` over prompt groups (seed 42): a group's 13 variants are always together in train or in test (an `assert` checks the overlap is empty).
 - The classifier trains on the **plain** rows of the training groups only. It never sees an encoded prompt.
 - On the test groups every row is scored three ways: raw text, decoded text (VeilBreak), and the true plaintext (a "perfect decoder" upper bound that isolates decoder errors from classifier errors).
 - VeilBreak's verdict = max P(unsafe) over the decoded text and each revealed Base64 payload (a harmless wrapper sentence otherwise dilutes the signal).

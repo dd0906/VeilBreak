@@ -20,7 +20,13 @@ What is different from a naive "obfuscate the bad prompts" dataset:
 Variants (9):
   plain | base64 | rot13 | leetspeak          <- in scope
   composed (base64 of rot13) | embedded_base64   <- in scope, harder
-  hex | reverse | caesar3                       <- OUT of scope: tests safe failure
+  hex                                           <- decoder added later, no retraining
+  reverse | caesar3                             <- OUT of scope: tests safe failure
+
+Smuggling variants (4 more, reported in their own section):
+  tag_smuggling | emoji_smuggling | zero_width | homoglyph
+They use their own random generator and are appended AFTER the shuffled rows,
+so the 9 variants above stay byte-identical and earlier results still reproduce.
 
 Usage:  python scripts/build_dataset.py [--seed 42]
 """
@@ -46,7 +52,9 @@ IMPERATIVE = ("write", "create", "develop", "generate", "provide", "explain",
               "draft", "suggest", "tell")
 
 IN_SCOPE = ["plain", "base64", "rot13", "leetspeak", "composed", "embedded_base64"]
-OUT_OF_SCOPE = ["hex", "reverse", "caesar3"]
+ADDED_LATER = ["hex"]
+OUT_OF_SCOPE = ["reverse", "caesar3"]
+SMUGGLING = ["tag_smuggling", "emoji_smuggling", "zero_width", "homoglyph"]
 
 
 def norm(t):
@@ -78,9 +86,21 @@ def make_variants(text, rng):
                       text, "leetspeak"),
         "composed": (E.encode_composed(text), text, "base64+rot13"),
         "embedded_base64": (emb, emb_expected, "base64"),
-        "hex": (E.encode_hex(text), text, "unsupported"),
+        "hex": (E.encode_hex(text), text, "hex"),
         "reverse": (E.encode_reverse(text), text, "unsupported"),
         "caesar3": (E.encode_caesar(text, 3), text, "unsupported"),
+    }
+
+
+def make_smuggling_variants(text, rng):
+    """Same return shape as make_variants, for the invisible-character attacks."""
+    tagged, tag_expected = E.smuggle_tags(text, rng)
+    emoji = E.smuggle_emoji(text)
+    return {
+        "tag_smuggling": (tagged, tag_expected, "tag_smuggling"),
+        "emoji_smuggling": (emoji, emoji[0] + text, "emoji_smuggling"),
+        "zero_width": (E.insert_zero_width(text, rng), text, "zero_width"),
+        "homoglyph": (E.encode_homoglyphs(text, 0.5, rng), text, "homoglyph"),
     }
 
 
@@ -89,6 +109,7 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
     rng = random.Random(args.seed)
+    rng_smuggle = random.Random(f"{args.seed}-smuggling")   # never touches `rng`
 
     # ---------- harmful prompts ----------
     harmful = [(t, "advbench") for t in load_prompts(os.path.join(RAW, "advbench.csv"))]
@@ -119,15 +140,17 @@ def main():
         take = matched[: n // 2] + others[: n - min(n // 2, len(matched))]
         return [(t, "alpaca") for t in take]
 
-    rows, gid = [], 0
+    rows, smuggle_rows, gid = [], [], 0
 
     def add_group(text, label, source, style, split):
         nonlocal gid
-        for variant, (obf, expected, steps) in make_variants(text, rng).items():
-            rows.append(dict(id=f"g{gid}_{variant}", group_id=f"g{gid}", split=split,
-                             label=label, source=source, style=style, variant=variant,
-                             text=obf, original=text, expected=expected,
-                             expected_steps=steps))
+        for target, variants in ((rows, make_variants(text, rng)),
+                                 (smuggle_rows, make_smuggling_variants(text, rng_smuggle))):
+            for variant, (obf, expected, steps) in variants.items():
+                target.append(dict(id=f"g{gid}_{variant}", group_id=f"g{gid}", split=split,
+                                   label=label, source=source, style=style, variant=variant,
+                                   text=obf, original=text, expected=expected,
+                                   expected_steps=steps))
         gid += 1
 
     for split in ("dev", "eval"):
@@ -144,11 +167,12 @@ def main():
             add_group(t, "safe", s, style, split)
 
     df = pd.DataFrame(rows).sample(frac=1, random_state=args.seed).reset_index(drop=True)
+    df = pd.concat([df, pd.DataFrame(smuggle_rows)], ignore_index=True)
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     df.to_csv(OUT, index=False)
 
     g = df.drop_duplicates("group_id")
-    print(f"Saved {len(df)} rows ({len(g)} prompt groups x 9 variants) -> {OUT}")
+    print(f"Saved {len(df)} rows ({len(g)} prompt groups x 13 variants) -> {OUT}")
     print(g.groupby(["split", "label"]).size().unstack().to_string())
     print("\nbenign style mix (eval):")
     print(g[(g.split == "eval") & (g.label == "safe")]["style"].value_counts().to_string())

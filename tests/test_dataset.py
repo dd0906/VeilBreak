@@ -13,9 +13,9 @@ def df():
     return pd.read_csv(PATH)
 
 
-def test_ids_unique_and_nine_variants_per_group(df):
+def test_ids_unique_and_thirteen_variants_per_group(df):
     assert df.id.is_unique
-    assert (df.groupby("group_id").size() == 9).all()
+    assert (df.groupby("group_id").size() == 13).all()
 
 
 def test_no_group_spans_dev_and_eval(df):
