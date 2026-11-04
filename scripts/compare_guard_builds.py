@@ -13,7 +13,7 @@ prompt formatting, so a difference is a difference between BUILDS. It is not pro
 that quantization alone caused it.
 
 Usage:  python scripts/compare_guard_builds.py
-Needs:  results/llamaguard_predictions_ollama.csv (saved from commit 564f4c7)
+Needs:  results/llamaguard_predictions_ollama.csv (saved from commit 47f412f)
         results/llamaguard_predictions.csv        (official weights)
 """
 import os
