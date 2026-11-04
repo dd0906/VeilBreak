@@ -1,0 +1,21 @@
+# A soft slate palette, always dark but not near-black, to be easier on the eyes. "minimal" hides the Deploy button and developer menu.
+[client]
+toolbarMode = "minimal"
+
+[theme]
+base = "dark"
+font = "Courier Prime:https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap"
+headingFont = "Courier Prime:https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap"
+codeFont = "Courier Prime:https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap"
+baseFontSize = 17
+baseRadius = "small"
+paddingTop = "1.5rem"
+paddingBottom = "1rem"
+backgroundColor = "#2b2f36"
+secondaryBackgroundColor = "#353a42"
+codeBackgroundColor = "#353a42"
+textColor = "#dcdfe4"
+primaryColor = "#b7bec8"
+borderColor = "#464c56"
+linkColor = "#b7bec8"
+codeTextColor = "#c3c9d2"

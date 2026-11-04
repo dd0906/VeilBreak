@@ -212,37 +212,47 @@ def cell(r):
     return f"{pct(r.value)} [{pct(r.lo)}–{pct(r.hi)}]"
 
 
-def chart(mt, systems, names, metric, title, path):
+def chart(mt, systems, names, metric, title, path, variants=None):
+    """Bar chart per variant. Without `variants`, shows the main set and marks what has no decoder."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    colors = {"clf_raw": "#999999", "clf_dec": "#0072B2", "clf_oracle": "#56B4E9",
-              "lg_raw": "#E69F00", "lg_raw_hi": "#F0C050", "lg_dec": "#009E73"}
-    variants = IN_SCOPE + ADDED_LATER + OUT_SCOPE
+    # Muted colours, readable on light and dark pages: blues for MiniLM, amber and teal
+    # for Llama Guard. These stay distinguishable for most colour-blind readers.
+    colors = {"clf_raw": "#8fa3b8", "clf_dec": "#5b9bd5", "clf_oracle": "#a9cce3",
+              "lg_raw": "#e0a458", "lg_raw_hi": "#ecc48f", "lg_dec": "#4fb3a1"}
+    hatches = {"clf_oracle": "//"}
+    ink = "#8d96a3"
+    matplotlib.rcParams.update({"font.family": "monospace", "font.size": 13, "text.color": ink, "axes.labelcolor": ink,
+                                "axes.edgecolor": ink, "xtick.color": ink, "ytick.color": ink,
+                                "hatch.color": ink, "hatch.linewidth": 0.5})
+    main_chart = variants is None
+    variants = variants or IN_SCOPE + ADDED_LATER + OUT_SCOPE
     fig, ax = plt.subplots(figsize=(12, 5.6))
-    top = 100 if metric == "catch_rate" else max(
-        5, float(np.ceil(mt[mt.metric == metric].hi.max() * 100 * 1.4 / 5) * 5))
-    ax.axvspan(6.5, len(variants) - 0.5, color="#f1f1f1", zorder=0)      # out-of-scope zone
-    ax.text((6.5 + len(variants) - 0.5) / 2, top * 1.045, "OUT OF SCOPE: no decoder exists for these",
-            ha="center", fontsize=9, color="#555")
+    top = 100 if metric == "catch_rate" else min(100, max(
+        5, float(np.ceil(mt[mt.metric == metric].hi.max() * 100 * 1.4 / 5) * 5)))
+    if main_chart:
+        ax.axvspan(6.5, len(variants) - 0.5, color=ink, alpha=0.12, zorder=0)  # out-of-scope zone
+        ax.text((6.5 + len(variants) - 0.5) / 2, top * 1.045, "no decoder",
+                ha="center", fontsize=11, color=ink)
     w = 0.8 / len(systems)
     for i, s in enumerate(systems):
         d = mt[(mt.system == s) & (mt.metric == metric)].set_index("variant").loc[variants]
         x = np.arange(len(variants)) + i * w - 0.4 + w / 2
         err = np.vstack([d.value - d.lo, d.hi - d.value])
         ax.bar(x, d.value * 100, w, yerr=err * 100, capsize=2, label=names[s],
-               color=colors[s], edgecolor="white", linewidth=0.5, zorder=2,
-               hatch="//" if s == "clf_oracle" else None, error_kw={"elinewidth": 1})
+               color=colors[s], linewidth=0, zorder=2,
+               hatch=hatches.get(s), error_kw={"elinewidth": 1, "ecolor": ink})
     ax.set_xticks(range(len(variants)))
     ax.set_xticklabels([v.replace("_", "\n") for v in variants])
-    ax.set_ylabel(title.split(" (")[0] + " (%)")
+    ax.set_ylabel("Caught (%)" if metric == "catch_rate" else "False alarms (%)")
     ax.set_ylim(0, top * 1.12)
     ax.set_yticks(np.linspace(0, top, 6 if metric == "catch_rate" else 5))
     ax.spines[["top", "right"]].set_visible(False)
-    fig.suptitle(title, x=0.01, ha="left", fontsize=12, fontweight="bold")
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.14), ncol=3, frameon=False, fontsize=9)
+    fig.suptitle(title, x=0.01, ha="left", fontsize=14)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=2, frameon=False, fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
-    fig.savefig(path, dpi=160)
+    fig.savefig(path, dpi=160, transparent=True)
     plt.close(fig)
 
 
@@ -289,6 +299,10 @@ def main():
     chart(mt, systems, names, "false_positive_rate",
           "False-positive rate on safe prompts (lower is better)",
           os.path.join(args.out, "false_positive_rate_by_variant.png"))
+    chart(mt, systems, names, "catch_rate", "Invisible-character attacks: catch rate (higher is better)",
+          os.path.join(args.out, "smuggling_catch_rate.png"), SMUGGLING)
+    chart(mt, systems, names, "false_positive_rate", "Invisible-character attacks: false-positive rate (lower is better)",
+          os.path.join(args.out, "smuggling_false_positive_rate.png"), SMUGGLING)
 
     # ---------------- RESULTS.md ----------------
     L = []

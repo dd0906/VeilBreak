@@ -70,6 +70,8 @@ What the tables show:
 
 ![catch rate](results/catch_rate_by_variant.png)
 ![false-positive rate](results/false_positive_rate_by_variant.png)
+![invisible-character attacks: catch rate](results/smuggling_catch_rate.png)
+![invisible-character attacks: false-positive rate](results/smuggling_false_positive_rate.png)
 
 **The decoder on its own (no ML; 1,108 prompts per variant)**
 
