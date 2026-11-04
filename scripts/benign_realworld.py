@@ -77,7 +77,8 @@ def build(n, seed):
     rand = lambda k: bytes(rng.getrandbits(8) for _ in range(k))        # noqa: E731
     images = [open(p, "rb").read() for p in sorted(glob.glob(os.path.join(ROOT, "results", "*.png")))]
     sources = [open(p, encoding="utf-8").read() for p in sorted(glob.glob(os.path.join(ROOT, "src", "*.py")))]
-    lines = [ln.strip() for p in ("README.md", "LICENSE")
+    # The technical doc holds the longer text that this test was first built from.
+    lines = [ln.strip() for p in ("docs/TECHNICAL_DETAILS.md", "LICENSE")
              for ln in open(os.path.join(ROOT, p), encoding="utf-8") if len(ln.split()) >= 8 and "|" not in ln]
 
     def chunk(data, size):
