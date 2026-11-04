@@ -206,9 +206,10 @@ python scripts/mask_opaque_test.py                  # masking; policies now diff
 streamlit run app/streamlit_app.py                  # interactive demo
 ```
 
-Two results can't be fully reproduced from the current code alone:
+Three results can't be fully reproduced from the current code alone:
 - **Build comparison:** needs `results/llamaguard_predictions_ollama.csv`, the saved Ollama run (also at the first git commit), and `scripts/compare_guard_builds.py`. To regenerate those predictions, use `ollama pull llama-guard3:1b` and `scripts/eval_llamaguard.py --out results/llamaguard_predictions_ollama.csv`.
 - **Masking:** `MASKING.md` was generated before hex was added to the pipeline, so a re-run now decodes hex in every policy.
+- **Real-world harmless content:** `REALWORLD_BENIGN.md` samples text and images from this repository, and the charts have changed since it ran, so a re-run won't match its numbers exactly.
 
 ## Repository layout
 
